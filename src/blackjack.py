@@ -4,6 +4,8 @@ from collections import deque
 from itertools import product, starmap
 from random import shuffle, randint
 from abc import ABC, abstractmethod
+import matplotlib.pyplot as plt
+import numpy as np
 
 class Card:
 
@@ -51,6 +53,13 @@ class Hand:
 
 	def draw_one(self, deck: Deck):
 		self.cards.append(deck.draw())
+	
+	def clear(self):
+		self.cards = []
+		self.state = self.State.CLOSED
+	
+	def __str__(self):
+		return str(self.cards)
 	
 	def __len__(self):
 		return len(self.cards)
@@ -105,7 +114,8 @@ class DealerStrategy(ABC):
 		self.ruleset = ruleset
 
 	@abstractmethod
-	def determine_action(self, hand: Hand, history: list[Tuple[Hand, int, int, int]], player_info: Tuple[Hand.State, Hand | int]) -> Tuple['Dealer.Action.RESOLVE', int] | 'Dealer.Action.HIT':
+	def determine_action(self, hand: Hand, history: list[Tuple[Hand, int, int, int]], player_info: Tuple[Hand.State, Hand | int]) -> Tuple['Dealer.Action.RESOLVE', int] | Tuple['Dealer.Action.HIT', None]:
+		
 		pass
 
 class Player(GamePlayer):
@@ -116,14 +126,19 @@ class Player(GamePlayer):
 		HIT = auto(),
 		STAND = auto()
 
-	def __init__(self, initial_bankroll: int, betting_strat: BettingStrategy, player_strat: PlayerStrategy):
+	def __init__(self, iden, initial_bankroll: int, betting_strat: BettingStrategy, player_strat: PlayerStrategy):
 		super().__init__()
+		self.iden = iden
 		self.bankroll = initial_bankroll
 		self.games_played = 0
 		self.curr_bet = 0
 		self.history = [] # (is_win: bool, hand: Hand, bet: int, new_bankroll: int)
 		self.betting_strat = betting_strat
 		self.player_strat = player_strat
+	
+	def reset(self):
+		self.hand.clear()
+		self.bust = False
 	
 	def get_curr_hand_info(self) -> Tuple[Hand.State, Hand | int]:
 		if self.hand.state is self.hand.State.OPEN:
@@ -140,12 +155,19 @@ class Player(GamePlayer):
 
 		if action is Player.Action.RUN:
 			self.hand.state = Hand.State.OPEN
-			return
+			self.history.append((None, self.hand.cards, self.curr_bet, self.bankroll))
 
-		if action is Player.Action.HIT:
+			print(f"[Player {self.iden}] RUN")
+		
+		elif action is Player.Action.HIT:
 			self.hand.draw_one(deck)
+			print(f"[Player {self.iden}] {action.name} -> {self.hand.cards[-1]}")
 			if self.ruleset.hand_value(self.hand) > 21:
 				self.bust = True
+				print(f"[Player {self.iden}] BUST")
+		
+		else:
+			print(f"[Player {self.iden}] STAND")
 
 class Dealer(GamePlayer):
 
@@ -159,10 +181,20 @@ class Dealer(GamePlayer):
 		self.bankroll = initial_bankroll
 		self.games_played = 0
 		self.dealer_strat = dealer_strat
-		self.history = [] # (hand: Hand, no_win: int, no_lose: int, new_bankroll: int)
+		self.wins = 0
+		self.losses = 0
+		self.draws = 0
+		self.history = [] # (hand: Hand, no_win: int, no_lose: int, no_draw: int, new_bankroll: int)
+
+	def reset(self):
+		self.hand.clear()
+		self.wins = 0
+		self.losses = 0
+		self.draws = 0
+		self.bust = False
 
 	def decide(self, player_info: Tuple[Hand.State, Hand | int]) -> Tuple['Dealer.Action.RESOLVE', int] | 'Dealer.Action.HIT':
-		self.dealer_strat.determine_action(self.hand, self.history, player_info)
+		return self.dealer_strat.determine_action(self.hand, self.history, player_info)
 
 	def action(self, action: 'Dealer.Action', target_player: Player, deck: Deck):
 
@@ -170,6 +202,8 @@ class Dealer(GamePlayer):
 			self.hand.draw_one(deck)
 			if self.ruleset.hand_value(self.hand) > 21:
 				self.bust = True
+			print(f"[Dealer]: {action.name} -> {self.hand.cards[-1]}")
+
 		if action is Dealer.Action.RESOLVE:
 
 			dealer_hand_value = self.ruleset.hand_value(self.hand)
@@ -177,23 +211,28 @@ class Dealer(GamePlayer):
 
 			dealer_win = False
 
-			if dealer_hand_value > player_hand_value or (target_player.bust is True and dealer.bust is False): # dealer win
-				payout_mult = self.ruleset.payout_multiplier(target_player.hand)
-				winnings = payout_mult * target_player.bet
-				self.bankroll -= winnings
-				target_player.bankroll += winnings
-				dealer_win = True
+			if (dealer_hand_value > player_hand_value and dealer.bust is False) or (target_player.bust is True and dealer.bust is False): # dealer win
 				
-			elif player_hand_value > dealer or (dealer.bust is True and target_player.bust is False): # player win
 				payout_mult = self.ruleset.payout_multiplier(self.hand)
-				winnings = payout_mult * target_player.bet
+				winnings = payout_mult * target_player.curr_bet
 				self.bankroll += winnings
 				target_player.bankroll -= winnings
+				dealer_win = True
+				self.wins += 1
+				
+			elif (player_hand_value > dealer_hand_value and target_player.bust is False) or (dealer.bust is True and target_player.bust is False): # player win
+				payout_mult = self.ruleset.payout_multiplier(target_player.hand)
+				winnings = payout_mult * target_player.curr_bet
+				self.bankroll -= winnings
+				target_player.bankroll += winnings
 				dealer_win = False
+				self.losses += 1
 			else: # else push
-				pass
+				self.draws += 1
+		
+			print(f"[Dealer] {action.name} -> {dealer.hand} ({dealer_hand_value}) vs {target_player.hand} ({player_hand_value}) = {"WIN" if dealer_win else "LOSE"}")
 			
-			target_player.history.append((not dealer_win, target_player.hand, target_player.bet, target_player.bankroll))
+			target_player.history.append((not dealer_win, target_player.hand.cards, target_player.curr_bet, target_player.bankroll))
 			target_player.hand.state = Hand.State.OPEN
 
 class Game:
@@ -220,6 +259,7 @@ class Game:
 		self._deal_hands()
 		self._player_turn()
 		self._dealer_turn()
+		self._clear()
 
 	def _player_bets(self):
 		for p in self.players:
@@ -237,7 +277,7 @@ class Game:
 
 		for p in range(len(self.players)):
 			player_action = None
-			while player_action is not Player.Action.STAND:
+			while player_action not in [Player.Action.STAND, Player.Action.RUN]:
 				player_action = self.players[p].decide()
 				self.players[p].action(player_action, self.deck)
 
@@ -249,13 +289,25 @@ class Game:
 		while any((lambda x: x[0] == Hand.State.CLOSED)(info) for info in players_hand_info):
 			
 			dealer_action, target_p = self.dealer.decide(players_hand_info)
-			self.dealer.action(dealer_action, self.players[target_p], self.deck)
+			target_player = None
+			if target_p is not None:
+				target_player = self.players[target_p]
+			
+			self.dealer.action(dealer_action, target_player, self.deck)
 			players_hand_info = [p.get_curr_hand_info() for p in self.players]
+		
+		dealer.history.append((dealer.hand, dealer.wins, dealer.losses, dealer.draws, dealer.bankroll))
+
+	def _clear(self):
+		for p in self.players:
+			p.reset()
+		self.dealer.reset()
 
 class Session:
 
 	def __init__(self, no_games: int, game_ruleset: GameRuleset, players: list[Player], dealer: Dealer):
 		self.no_games = no_games
+		self.games_played = 0
 		self.players = players
 		self.dealer = dealer
 		self.game_ruleset = game_ruleset
@@ -266,6 +318,7 @@ class Session:
 			print(f"Game {i}")
 			game = Game(self.dealer, self.players, self.game_ruleset)
 			game.play()
+			self.games_played += 1
 
 			# players drop out if bankroll goes negative
 			self.players = [p for p in self.players if p.bankroll > 0]
@@ -299,7 +352,7 @@ class RegularPlayerStrategy(PlayerStrategy):
 
 	def determine_action(self, hand: Hand, history: list[Tuple[bool, Hand, int, int]]) -> 'Player.Action':
 		
-		if self.ruleset.hand_value(hand) == 15:
+		if self.ruleset.hand_value(hand) == 15 and len(hand) == 2:
 			return Player.Action.RUN
 
 		if self.ruleset.hand_value(hand) < 16:
@@ -309,10 +362,10 @@ class RegularPlayerStrategy(PlayerStrategy):
 
 class RegularDealerStrategy(DealerStrategy):
 
-	def determine_action(self, hand: Hand, history: list[Tuple[Hand, int, int, int]], player_info: Tuple[Hand.State, Hand | int]) -> Tuple['Dealer.Action.RESOLVE', int] | 'Dealer.Action.HIT':
+	def determine_action(self, hand: Hand, history: list[Tuple[Hand, int, int, int]], player_info: Tuple[Hand.State, Hand | int]) -> Tuple['Dealer.Action.RESOLVE', int] | Tuple['Dealer.Action.HIT', None]:
 		
 		if self.ruleset.hand_value(hand) < 16:
-			return Dealer.Action.HIT
+			return Dealer.Action.HIT, None
 
 		for i in range(len(player_info)):
 			if player_info[i][0] == Hand.State.CLOSED:
@@ -325,9 +378,9 @@ class ChineseBlackjackRuleset(GameRuleset):
 		value = 0
 		for card in hand.cards:
 
-			if card.value.value in ['J', 'Q', 'K']:
+			if card.value.name in ['J', 'Q', 'K']:
 				value += 10
-			elif card.value.value == 'A':
+			elif card.value.name == 'A':
 				if len(hand) <= 2:
 					value += 11
 				elif len(hand) == 3:
@@ -335,7 +388,7 @@ class ChineseBlackjackRuleset(GameRuleset):
 				elif len(hand) > 3:
 					value += 1
 			else:
-				value += int(card.value.value)
+				value += int(card.value.name)
 
 		return value
 
@@ -357,7 +410,7 @@ class ChineseBlackjackRuleset(GameRuleset):
 			return 2
 
 		if len(hand) == 2 and hand.cards[0].value == hand.cards[1].value and \
-			hand.cards[0].value >= 8:
+			hand.cards[0].value in ['8', '9', '10', 'J', 'Q', 'K']:
 			return 2
 
 		return 1
@@ -370,7 +423,28 @@ if __name__ == "__main__":
 	ps = RegularPlayerStrategy(chinese_ruleset)
 	ds = RegularDealerStrategy(chinese_ruleset)
 	
-	players = [Player(20, rand_bs, ps) for _ in range(4)] + [Player(20, flat_bs, ps)]
+	players = [Player(i + 1, 20, rand_bs, ps) for i in range(4)] + [Player(5, 20, flat_bs, ps)]
 	dealer = Dealer(20, ds)
-	s = Session(50, chinese_ruleset, players, dealer)
+	s = Session(500, chinese_ruleset, players, dealer)
 	s.simulate()
+
+	x = np.linspace(0, s.games_played, num=s.games_played)
+	ys = []
+	for p in players:
+		y = [h[3] for h in p.history]
+		if len(y) < s.games_played:
+			y += [y[-1]] * (s.games_played - len(y))
+		ys.append(y)
+
+	print(ys)
+
+	for i, y in enumerate(ys):
+		plt.plot(x, y, label=f'Player {i + 1}')
+
+	yd = [h[4] for h in dealer.history]
+	print(yd)
+
+	plt.plot(x, yd, label='Dealer')
+
+	plt.legend()
+	plt.show()
