@@ -97,6 +97,36 @@ class BettingStrategy(ABC):
 	def place_bet(self, bankroll: int, history: Tuple[str, list[Card], int, int]) -> int:
 		pass
 
+class PlayerHistory():
+
+	def __init__(self, win: bool, hand: Hand, bet: int, new_bankroll: int, profit: int):
+		self.win = win
+		self.hand = hand
+		self.bet = bet
+		self.new_bankroll = new_bankroll
+		self.profit = profit
+
+	def __str__(self):
+		print(f"(Player win: {self.win}, Hand: {self.hand}, Bet: {self.bet}, Bankroll: {self.new_bankroll}, Profit: {self.profit})")
+
+	def __repr__(self):
+		return str(self)
+
+class DealerHistory():
+
+	def __init__(self, hand: Hand, no_win: int, no_lose: int, no_draw: int, new_bankroll: int, profit: int):
+		self.hand = hand
+		self.round_wins = no_win
+		self.round_losses = no_lose
+		self.round_draws = no_draw
+		self.new_bankroll = new_bankroll
+		self.profit = profit
+	
+	def __str__(self):
+		print(f"(Banker Hand: {self.hand}, {self.round_wins} wins, {self.round_losses} losses, {self.round_draws} draws, Bankroll: {self.new_bankroll}, Profit: {self.profit})")
+	
+	def __repr__(self):
+		return str(self)
 class PlayerStrategy(ABC):
 
 	def __init__(self, ruleset: GameRuleset):
@@ -104,7 +134,7 @@ class PlayerStrategy(ABC):
 		self.ruleset = ruleset
 	
 	@abstractmethod
-	def determine_action(self, hand: Hand, history: list[Tuple[bool, Hand, int, int]]) -> 'Player.Action':
+	def determine_action(self, hand: Hand, history: list[PlayerHistory]) -> 'Player.Action':
 		pass
 
 class DealerStrategy(ABC):
@@ -114,9 +144,9 @@ class DealerStrategy(ABC):
 		self.ruleset = ruleset
 
 	@abstractmethod
-	def determine_action(self, hand: Hand, history: list[Tuple[Hand, int, int, int]], player_info: Tuple[Hand.State, Hand | int]) -> Tuple['Dealer.Action.RESOLVE', int] | Tuple['Dealer.Action.HIT', None]:
-		
+	def determine_action(self, hand: Hand, history: list[DealerHistory], player_info: Tuple[Hand.State, Hand | int]) -> Tuple['Dealer.Action.RESOLVE', int] | Tuple['Dealer.Action.HIT', None]:
 		pass
+
 
 class Player(GamePlayer):
 
@@ -155,19 +185,20 @@ class Player(GamePlayer):
 
 		if action is Player.Action.RUN:
 			self.hand.state = Hand.State.OPEN
-			self.history.append((None, self.hand.cards, self.curr_bet, self.bankroll))
+			self.history.append(PlayerHistory(None, self.hand, self.curr_bet, self.bankroll, 0))
 
-			print(f"[Player {self.iden}] RUN")
+			# print(f"[Player {self.iden}] RUN")
 		
 		elif action is Player.Action.HIT:
 			self.hand.draw_one(deck)
-			print(f"[Player {self.iden}] {action.name} -> {self.hand.cards[-1]}")
+			# print(f"[Player {self.iden}] {action.name} -> {self.hand.cards[-1]}")
 			if self.ruleset.hand_value(self.hand) > 21:
 				self.bust = True
-				print(f"[Player {self.iden}] BUST")
+				# print(f"[Player {self.iden}] BUST")
 		
 		else:
-			print(f"[Player {self.iden}] STAND")
+			# print(f"[Player {self.iden}] STAND")
+			pass
 
 class Dealer(GamePlayer):
 
@@ -181,16 +212,18 @@ class Dealer(GamePlayer):
 		self.bankroll = initial_bankroll
 		self.games_played = 0
 		self.dealer_strat = dealer_strat
-		self.wins = 0
-		self.losses = 0
-		self.draws = 0
-		self.history = [] # (hand: Hand, no_win: int, no_lose: int, no_draw: int, new_bankroll: int)
+		self.round_wins = 0
+		self.round_losses = 0
+		self.round_draws = 0
+		self.round_profit = 0
+		self.history = []
 
 	def reset(self):
 		self.hand.clear()
 		self.wins = 0
 		self.losses = 0
 		self.draws = 0
+		self.round_profit = 0
 		self.bust = False
 
 	def decide(self, player_info: Tuple[Hand.State, Hand | int]) -> Tuple['Dealer.Action.RESOLVE', int] | 'Dealer.Action.HIT':
@@ -202,14 +235,16 @@ class Dealer(GamePlayer):
 			self.hand.draw_one(deck)
 			if self.ruleset.hand_value(self.hand) > 21:
 				self.bust = True
-			print(f"[Dealer]: {action.name} -> {self.hand.cards[-1]}")
+			# print(f"[Dealer]: {action.name} -> {self.hand.cards[-1]}")
 
 		if action is Dealer.Action.RESOLVE:
 
 			dealer_hand_value = self.ruleset.hand_value(self.hand)
 			player_hand_value = self.ruleset.hand_value(target_player.hand)
 
-			dealer_win = False
+			dealer_win = None
+
+			winnings = 0
 
 			if (dealer_hand_value > player_hand_value and dealer.bust is False) or (target_player.bust is True and dealer.bust is False): # dealer win
 				
@@ -218,7 +253,8 @@ class Dealer(GamePlayer):
 				self.bankroll += winnings
 				target_player.bankroll -= winnings
 				dealer_win = True
-				self.wins += 1
+				self.round_profit += winnings
+				self.round_wins += 1
 				
 			elif (player_hand_value > dealer_hand_value and target_player.bust is False) or (dealer.bust is True and target_player.bust is False): # player win
 				payout_mult = self.ruleset.payout_multiplier(target_player.hand)
@@ -226,13 +262,15 @@ class Dealer(GamePlayer):
 				self.bankroll -= winnings
 				target_player.bankroll += winnings
 				dealer_win = False
-				self.losses += 1
+				self.round_losses += 1
+				self.round_profit -= winnings
 			else: # else push
-				self.draws += 1
+				self.round_draws += 1
+
 		
-			print(f"[Dealer] {action.name} -> {dealer.hand} ({dealer_hand_value}) vs {target_player.hand} ({player_hand_value}) = {"WIN" if dealer_win else "LOSE"}")
+			# print(f"[Dealer] {action.name} -> {dealer.hand} ({dealer_hand_value}) vs {target_player.hand} ({player_hand_value}) = {"DRAW" if dealer_win is None else "LOSE" if dealer_win is False else "WIN"}")
 			
-			target_player.history.append((not dealer_win, target_player.hand.cards, target_player.curr_bet, target_player.bankroll))
+			target_player.history.append(PlayerHistory(not dealer_win, target_player.hand, target_player.curr_bet, target_player.bankroll, winnings * (-1 if dealer_win else 1)))
 			target_player.hand.state = Hand.State.OPEN
 
 class Game:
@@ -296,7 +334,7 @@ class Game:
 			self.dealer.action(dealer_action, target_player, self.deck)
 			players_hand_info = [p.get_curr_hand_info() for p in self.players]
 		
-		dealer.history.append((dealer.hand, dealer.wins, dealer.losses, dealer.draws, dealer.bankroll))
+		dealer.history.append(DealerHistory(dealer.hand, dealer.round_wins, dealer.round_losses, dealer.round_draws, dealer.bankroll, dealer.round_profit))
 
 	def _clear(self):
 		for p in self.players:
@@ -315,7 +353,7 @@ class Session:
 	def simulate(self):
 		
 		for i in range(self.no_games):
-			print(f"Game {i}")
+			# print(f"Game {i}")
 			game = Game(self.dealer, self.players, self.game_ruleset)
 			game.play()
 			self.games_played += 1
@@ -416,6 +454,7 @@ class ChineseBlackjackRuleset(GameRuleset):
 		return 1
 
 if __name__ == "__main__":
+	from math import inf
 	
 	rand_bs = RandomBettingStrategy(1, 2)
 	flat_bs = FlatBettingStrategy(1)
@@ -423,28 +462,42 @@ if __name__ == "__main__":
 	ps = RegularPlayerStrategy(chinese_ruleset)
 	ds = RegularDealerStrategy(chinese_ruleset)
 	
-	players = [Player(i + 1, 20, rand_bs, ps) for i in range(4)] + [Player(5, 20, flat_bs, ps)]
-	dealer = Dealer(20, ds)
-	s = Session(500, chinese_ruleset, players, dealer)
-	s.simulate()
+	TOTAL_GAMES = 100000
 
-	x = np.linspace(0, s.games_played, num=s.games_played)
-	ys = []
-	for p in players:
-		y = [h[3] for h in p.history]
-		if len(y) < s.games_played:
-			y += [y[-1]] * (s.games_played - len(y))
-		ys.append(y)
+	dealer_evs = []
 
-	print(ys)
+	for player_count in range(1, 16):
 
-	for i, y in enumerate(ys):
-		plt.plot(x, y, label=f'Player {i + 1}')
+		print(f"Player count: {player_count}")
 
-	yd = [h[4] for h in dealer.history]
-	print(yd)
+		players = [Player(i + 1, inf, flat_bs, ps) for i in range(player_count)]
+		dealer = Dealer(inf, ds)
 
-	plt.plot(x, yd, label='Dealer')
+		s = Session(TOTAL_GAMES, chinese_ruleset, players, dealer)
+		s.simulate()
 
-	plt.legend()
+		x = np.linspace(0, s.games_played, num=s.games_played)
+		ys = []
+		for p in players:
+			y = [h.profit for h in p.history]
+			print(f"Expected value for player {p.iden}: {np.mean(y)}")
+			if len(y) < s.games_played:
+				y += [y[-1]] * (s.games_played - len(y))
+			ys.append(y)
+
+		# print(ys)
+
+		yd = [h.profit for h in dealer.history]
+		dealer_evs.append(np.mean(yd))
+		print(f"Expected value for dealer: {np.mean(yd)}")
+
+	plt.plot(np.linspace(1, 15, 15), dealer_evs)
+
+	# print(yd)
+
+	# for i, y in enumerate(ys):
+	# 	plt.plot(x, y, label=f'Player {i + 1}')
+	# plt.plot(x, yd, label='Dealer')
+
+	# plt.legend()
 	plt.show()
